@@ -21,8 +21,20 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// UUS: Määrake lubatud esiotsa URL
+const frontendOrigin = 'https://mt-hub-frontend.vercel.app';
+
+// UUS: CORS konfiguratsiooni objekt
+const corsOptions = {
+    origin: frontendOrigin,
+    // Lisage see rida, kui teie frontend saadab küpsiseid,
+    // autentimispäiseid või muid volitusi.
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
