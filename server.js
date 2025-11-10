@@ -47,8 +47,10 @@ app.get('/api/health', (req, res) => {
 app.use(errorHandler);
 
 // Connect to MongoDB
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/tantsukool';
+
 mongoose
-  .connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/tantsukool', {
+  .connect(MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
