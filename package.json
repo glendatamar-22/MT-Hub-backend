@@ -4,6 +4,10 @@
   "description": "Backend API for Minu Tantsukool dance school management app",
   "main": "server.js",
   "type": "module",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
@@ -29,4 +33,3 @@
     "nodemon": "^3.0.1"
   }
 }
-
