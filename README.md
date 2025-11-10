@@ -6,7 +6,7 @@ A full-stack web application for managing dance school groups, students, parents
 
 ### Issue 1: MongoDB Connection ✅
 - Updated `backend/env.example.txt` with your MongoDB Atlas connection string
-- Connection string format: `mongodb+srv://glendatamar_db_user:SSFSbjnoGU5N233X@minutantsukool.p4udazm.mongodb.net/?retryWrites=true&w=majority&appName=minutantsukool`
+- Connection string format: `mongodb+srv://glendatamar_db_user:@minutantsukool.p4udazm.mongodb.net/?retryWrites=true&w=majority&appName=minutantsukool`
 
 ### Issue 2: Render Error (Cannot find module) ✅
 - Created `render.yaml` at root level with correct build/start commands
