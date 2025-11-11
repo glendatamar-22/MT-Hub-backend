@@ -6,6 +6,32 @@ import { protect } from '../middleware/auth.js';
 
 const router = express.Router();
 
+const ensureParentInGroup = async (groupId, parentId) => {
+  if (!groupId || !parentId) {
+    return;
+  }
+  await Group.updateOne(
+    { _id: groupId },
+    { $addToSet: { parents: parentId } }
+  );
+};
+
+const removeParentFromGroupIfUnused = async (groupId, parentId) => {
+  if (!groupId || !parentId) {
+    return;
+  }
+  const remainingStudents = await Student.countDocuments({
+    group: groupId,
+    parent: parentId,
+  });
+  if (remainingStudents === 0) {
+    await Group.updateOne(
+      { _id: groupId },
+      { $pull: { parents: parentId } }
+    );
+  }
+};
+
 // @route   GET /api/students
 // @desc    Get all students (with optional group filter)
 // @access  Private
@@ -178,17 +204,17 @@ router.post('/', protect, async (req, res) => {
       parentEmail: normalizedEmail,
     });
 
-    // Add student to group
-    if (!group.students.some((id) => id.equals(student._id))) {
-      group.students.push(student._id);
-      await group.save();
-    }
+    await Group.updateOne(
+      { _id: groupId },
+      { $addToSet: { students: student._id } }
+    );
 
-    // Add student to parent
     if (!parent.students.some((id) => id.equals(student._id))) {
       parent.students.push(student._id);
       await parent.save();
     }
+
+    await ensureParentInGroup(groupId, parent._id);
 
     const populatedStudent = await Student.findById(student._id)
       .populate('group', 'name location')
@@ -240,7 +266,10 @@ router.put('/:id', protect, async (req, res) => {
       student.age = age;
     }
 
-    if (groupId && groupId.toString() !== student.group.toString()) {
+    const originalGroupId = student.group ? student.group.toString() : null;
+    const originalParentId = student.parent ? student.parent.toString() : null;
+
+    if (groupId && (!originalGroupId || groupId.toString() !== originalGroupId)) {
       const newGroup = await Group.findById(groupId);
       if (!newGroup) {
         return res.status(404).json({
@@ -249,15 +278,17 @@ router.put('/:id', protect, async (req, res) => {
         });
       }
 
-      await Group.updateOne(
-        { _id: student.group },
-        { $pull: { students: student._id } }
-      );
-
-      if (!newGroup.students.includes(student._id)) {
-        newGroup.students.push(student._id);
-        await newGroup.save();
+      if (originalGroupId) {
+        await Group.updateOne(
+          { _id: originalGroupId },
+          { $pull: { students: student._id } }
+        );
       }
+
+      await Group.updateOne(
+        { _id: groupId },
+        { $addToSet: { students: student._id } }
+      );
 
       student.group = groupId;
     }
@@ -337,6 +368,24 @@ router.put('/:id', protect, async (req, res) => {
 
     await student.save();
 
+    if (student.parent) {
+      await ensureParentInGroup(student.group, student.parent);
+    }
+
+    if (originalGroupId && (!student.group || student.group.toString() !== originalGroupId)) {
+      await removeParentFromGroupIfUnused(originalGroupId, originalParentId);
+    }
+
+    if (
+      originalParentId &&
+      (!student.parent || student.parent.toString() !== originalParentId)
+    ) {
+      const targetGroupId = student.group ? student.group.toString() : originalGroupId;
+      if (targetGroupId) {
+        await removeParentFromGroupIfUnused(targetGroupId, originalParentId);
+      }
+    }
+
     const populatedStudent = await Student.findById(student._id)
       .populate('group', 'name location')
       .populate('parent', 'firstName lastName email phone');
@@ -390,6 +439,8 @@ router.delete('/:id', protect, async (req, res) => {
           await parent.deleteOne();
         }
       }
+
+      await removeParentFromGroupIfUnused(student.group, student.parent);
     }
 
     await student.deleteOne();

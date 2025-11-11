@@ -1,10 +1,64 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Group from '../models/Group.js';
 import Student from '../models/Student.js';
+import Parent from '../models/Parent.js';
 import Schedule from '../models/Schedule.js';
 import { protect } from '../middleware/auth.js';
 
 const router = express.Router();
+
+const normalizeParentName = (name) => {
+  if (!name) {
+    return {
+      firstName: 'Lapsevanem',
+      lastName: '',
+      fullName: 'Lapsevanem',
+    };
+  }
+  const cleaned = name.trim();
+  if (!cleaned.length) {
+    return {
+      firstName: 'Lapsevanem',
+      lastName: '',
+      fullName: 'Lapsevanem',
+    };
+  }
+  const parts = cleaned.split(/\s+/);
+  const firstName = parts.shift();
+  const lastName = parts.length ? parts.join(' ') : '';
+  return {
+    firstName: firstName || 'Lapsevanem',
+    lastName,
+    fullName: cleaned,
+  };
+};
+
+const ensureParentInGroup = async (groupId, parentId) => {
+  if (!parentId) {
+    return;
+  }
+  await Group.updateOne(
+    { _id: groupId },
+    { $addToSet: { parents: parentId } }
+  );
+};
+
+const removeParentFromGroupIfUnused = async (groupId, parentId) => {
+  if (!groupId || !parentId) {
+    return;
+  }
+  const remaining = await Student.countDocuments({
+    group: groupId,
+    parent: parentId,
+  });
+  if (remaining === 0) {
+    await Group.updateOne(
+      { _id: groupId },
+      { $pull: { parents: parentId } }
+    );
+  }
+};
 
 // @route   GET /api/groups
 // @desc    Get all groups
@@ -62,6 +116,47 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/groups/:id/full
+// @desc    Get group with full relations for admin bulk editor
+// @access  Private (Admin only)
+router.get('/:id/full', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to access this resource',
+      });
+    }
+
+    const group = await Group.findById(req.params.id)
+      .populate({
+        path: 'students',
+        populate: {
+          path: 'parent',
+          select: 'firstName lastName email phone',
+        },
+      })
+      .populate('parents', 'firstName lastName email phone');
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: group,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 // @route   GET /api/groups/:id
 // @desc    Get single group
 // @access  Private
@@ -75,7 +170,8 @@ router.get('/:id', protect, async (req, res) => {
           path: 'parent',
           select: 'firstName lastName email phone',
         },
-      });
+      })
+      .populate('parents', 'firstName lastName email phone');
 
     if (!group) {
       return res.status(404).json({
@@ -164,6 +260,213 @@ router.put('/:id', protect, async (req, res) => {
     res.json({
       success: true,
       data: group,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+// @route   PATCH /api/groups/:id/full
+// @desc    Bulk update group (name, students, parents)
+// @access  Private (Admin only)
+router.patch('/:id/full', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update groups',
+      });
+    }
+
+    const { name, location, description, studentIds = [], parents = [] } = req.body;
+
+    const group = await Group.findById(req.params.id);
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found',
+      });
+    }
+
+    if (typeof name === 'string') {
+      group.name = name.trim();
+    }
+    if (typeof location === 'string') {
+      group.location = location.trim();
+    }
+    if (typeof description === 'string') {
+      group.description = description;
+    }
+
+    const requestedStudentIds = Array.isArray(studentIds)
+      ? [...new Set(studentIds.filter(Boolean).map((id) => id.toString()))]
+      : [];
+
+    // Validate students
+    if (requestedStudentIds.length) {
+      const foundStudents = await Student.find({ _id: { $in: requestedStudentIds } }).select(
+        '_id group parent'
+      );
+      if (foundStudents.length !== requestedStudentIds.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'One or more students were not found',
+        });
+      }
+
+      const currentStudentIds = group.students.map((id) => id.toString());
+
+      const toRemove = currentStudentIds.filter(
+        (id) => !requestedStudentIds.includes(id)
+      );
+      const toAssign = requestedStudentIds;
+
+      // Remove students that are no longer in the group
+      for (const studentId of toRemove) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+          continue;
+        }
+        const parentId = student.parent ? student.parent.toString() : null;
+        student.group = null;
+        await student.save();
+        await Group.updateOne(
+          { _id: group._id },
+          { $pull: { students: student._id } }
+        );
+        await removeParentFromGroupIfUnused(group._id, parentId);
+      }
+
+      // Assign requested students to the group
+      for (const studentId of toAssign) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+          continue;
+        }
+        const previousGroupId = student.group ? student.group.toString() : null;
+        if (!previousGroupId || previousGroupId !== group._id.toString()) {
+          if (previousGroupId) {
+            await Group.updateOne(
+              { _id: previousGroupId },
+              { $pull: { students: student._id } }
+            );
+            await removeParentFromGroupIfUnused(previousGroupId, student.parent);
+          }
+          student.group = group._id;
+          await student.save();
+        }
+        await Group.updateOne(
+          { _id: group._id },
+          { $addToSet: { students: student._id } }
+        );
+        if (student.parent) {
+          await ensureParentInGroup(group._id, student.parent);
+        }
+      }
+
+      group.students = requestedStudentIds.map((id) => new mongoose.Types.ObjectId(id));
+    } else {
+      // No students requested - detach all
+      const currentStudentIds = group.students.map((id) => id.toString());
+      for (const studentId of currentStudentIds) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+          continue;
+        }
+        const parentId = student.parent ? student.parent.toString() : null;
+        student.group = null;
+        await student.save();
+        await removeParentFromGroupIfUnused(group._id, parentId);
+      }
+      group.students = [];
+    }
+
+    const studentParentIds = await Student.find({ group: group._id })
+      .distinct('parent')
+      .then((ids) =>
+        ids.filter(Boolean).map((id) => id.toString())
+      );
+
+    const parentIdsSet = new Set(studentParentIds);
+    const parentPayload = Array.isArray(parents) ? parents : [];
+
+    for (const parentItem of parentPayload) {
+      const email = parentItem?.email?.toLowerCase().trim();
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: 'Parent email is required for each parent entry',
+        });
+      }
+
+      const nameParts = normalizeParentName(parentItem.name);
+      let parentDoc = await Parent.findOne({ email });
+      if (!parentDoc) {
+        parentDoc = await Parent.create({
+          firstName: nameParts.firstName,
+          lastName: nameParts.lastName,
+          email,
+        });
+      } else {
+        let shouldSave = false;
+        if (nameParts.firstName && parentDoc.firstName !== nameParts.firstName) {
+          parentDoc.firstName = nameParts.firstName;
+          shouldSave = true;
+        }
+        if (
+          typeof nameParts.lastName !== 'undefined' &&
+          parentDoc.lastName !== nameParts.lastName
+        ) {
+          parentDoc.lastName = nameParts.lastName;
+          shouldSave = true;
+        }
+        if (shouldSave) {
+          await parentDoc.save();
+        }
+      }
+
+      parentIdsSet.add(parentDoc._id.toString());
+    }
+
+    const finalParentIds = Array.from(parentIdsSet).map(
+      (id) => new mongoose.Types.ObjectId(id)
+    );
+
+    const previousParentIds = group.parents.map((id) => id.toString());
+    const removedParentIds = previousParentIds.filter(
+      (id) => !parentIdsSet.has(id)
+    );
+
+    group.parents = finalParentIds;
+    await group.save();
+
+    // Clean up removed parents if they are no longer referenced
+    for (const parentId of removedParentIds) {
+      await removeParentFromGroupIfUnused(group._id, parentId);
+      const stillReferenced =
+        (await Student.countDocuments({ parent: parentId })) > 0 ||
+        (await Group.countDocuments({ parents: parentId })) > 0;
+      if (!stillReferenced) {
+        await Parent.deleteOne({ _id: parentId });
+      }
+    }
+
+    const updatedGroup = await Group.findById(group._id)
+      .populate({
+        path: 'students',
+        populate: {
+          path: 'parent',
+          select: 'firstName lastName email phone',
+        },
+      })
+      .populate('parents', 'firstName lastName email phone');
+
+    res.json({
+      success: true,
+      data: updatedGroup,
     });
   } catch (error) {
     res.status(500).json({
