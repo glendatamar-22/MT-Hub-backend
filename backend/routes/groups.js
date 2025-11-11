@@ -476,6 +476,71 @@ router.patch('/:id/full', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/groups/:id/export-csv
+// @desc    Export group students to CSV
+// @access  Private (Admin only)
+router.get('/:id/export-csv', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to export group data',
+      });
+    }
+
+    const group = await Group.findById(req.params.id)
+      .populate({
+        path: 'students',
+        populate: {
+          path: 'parent',
+          select: 'firstName lastName email phone',
+        },
+      });
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found',
+      });
+    }
+
+    // Create CSV content with UTF-8 BOM for Estonian characters
+    const BOM = '\uFEFF';
+    let csv = BOM + 'Grupi nimi,Õpilase nimi,Õpilase vanus,Lapsevanema nimi,Lapsevanema e-post,Telefon\n';
+
+    group.students.forEach((student) => {
+      const groupName = group.name || '';
+      const studentName = `${student.firstName} ${student.lastName}`;
+      const studentAge = student.age || '';
+      const parentName = student.parentName || 
+        (student.parent ? `${student.parent.firstName || ''} ${student.parent.lastName || ''}`.trim() : '');
+      const parentEmail = student.parentEmail || student.parent?.email || '';
+      const parentPhone = student.parent?.phone || '';
+
+      // Escape commas and quotes in CSV
+      const escapeCSV = (str) => {
+        if (!str) return '';
+        const s = String(str);
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      csv += `${escapeCSV(groupName)},${escapeCSV(studentName)},${escapeCSV(studentAge)},${escapeCSV(parentName)},${escapeCSV(parentEmail)},${escapeCSV(parentPhone)}\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${group.name}_opilased.csv"`);
+    res.send(csv);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 // @route   DELETE /api/groups/:id
 // @desc    Delete group
 // @access  Private (Admin only)

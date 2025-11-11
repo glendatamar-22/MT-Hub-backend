@@ -34,18 +34,21 @@ router.get('/users', async (req, res) => {
 });
 
 // @route   PUT /api/admin/users/:id
-// @desc    Update user (assign groups, change role)
+// @desc    Update user (name, email, assign groups, change role)
 // @access  Private (Admin only)
 router.put('/users/:id', async (req, res) => {
   try {
-    const { assignedGroups, role } = req.body;
+    const { name, email, assignedGroups, role } = req.body;
+
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (email) updateData.email = email;
+    if (assignedGroups !== undefined) updateData.assignedGroups = assignedGroups;
+    if (role) updateData.role = role;
 
     const user = await User.findByIdAndUpdate(
       req.params.id,
-      {
-        assignedGroups: assignedGroups || undefined,
-        role: role || undefined,
-      },
+      updateData,
       {
         new: true,
         runValidators: true,
