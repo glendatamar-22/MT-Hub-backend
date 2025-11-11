@@ -27,6 +27,12 @@ const groupSchema = new mongoose.Schema({
       ref: 'Student',
     },
   ],
+  parents: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Parent',
+    },
+  ],
   createdAt: {
     type: Date,
     default: Date.now,

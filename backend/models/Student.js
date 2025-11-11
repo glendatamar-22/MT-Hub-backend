@@ -19,7 +19,7 @@ const studentSchema = new mongoose.Schema({
   group: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',
-    required: true,
+    required: false,
   },
   parent: {
     type: mongoose.Schema.Types.ObjectId,
