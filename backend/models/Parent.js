@@ -3,12 +3,12 @@ import mongoose from 'mongoose';
 const parentSchema = new mongoose.Schema({
   firstName: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
   },
   lastName: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
   },
   email: {
