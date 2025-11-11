@@ -90,6 +90,32 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/students
 // @desc    Create new student
 // @access  Private (Admin only)
+const normalizeParentName = (name) => {
+  if (!name) {
+    return {
+      firstName: 'Lapsevanem',
+      lastName: '',
+      fullName: 'Lapsevanem',
+    };
+  }
+  const cleaned = name.trim();
+  if (!cleaned.length) {
+    return {
+      firstName: 'Lapsevanem',
+      lastName: '',
+      fullName: 'Lapsevanem',
+    };
+  }
+  const parts = cleaned.split(/\s+/);
+  const firstName = parts.shift();
+  const lastName = parts.length ? parts.join(' ') : '';
+  return {
+    firstName: firstName || 'Lapsevanem',
+    lastName,
+    fullName: cleaned,
+  };
+};
+
 router.post('/', protect, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -99,7 +125,14 @@ router.post('/', protect, async (req, res) => {
       });
     }
 
-    const { firstName, lastName, age, groupId, parentId } = req.body;
+    const { firstName, lastName, age, groupId, parentName, parentEmail } = req.body;
+
+    if (!parentEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Parent email is required',
+      });
+    }
 
     // Verify group exists
     const group = await Group.findById(groupId);
@@ -110,13 +143,29 @@ router.post('/', protect, async (req, res) => {
       });
     }
 
-    // Verify parent exists
-    const parent = await Parent.findById(parentId);
+    const normalizedEmail = parentEmail.toLowerCase();
+    const nameParts = normalizeParentName(parentName);
+
+    let parent = await Parent.findOne({ email: normalizedEmail });
     if (!parent) {
-      return res.status(404).json({
-        success: false,
-        message: 'Parent not found',
+      parent = await Parent.create({
+        firstName: nameParts.firstName,
+        lastName: nameParts.lastName,
+        email: normalizedEmail,
       });
+    } else {
+      let shouldSaveParent = false;
+      if (nameParts.firstName && parent.firstName !== nameParts.firstName) {
+        parent.firstName = nameParts.firstName;
+        shouldSaveParent = true;
+      }
+      if (nameParts.lastName && parent.lastName !== nameParts.lastName) {
+        parent.lastName = nameParts.lastName;
+        shouldSaveParent = true;
+      }
+      if (shouldSaveParent) {
+        await parent.save();
+      }
     }
 
     const student = await Student.create({
@@ -124,16 +173,22 @@ router.post('/', protect, async (req, res) => {
       lastName,
       age,
       group: groupId,
-      parent: parentId,
+      parent: parent._id,
+      parentName: nameParts.fullName,
+      parentEmail: normalizedEmail,
     });
 
     // Add student to group
-    group.students.push(student._id);
-    await group.save();
+    if (!group.students.some((id) => id.equals(student._id))) {
+      group.students.push(student._id);
+      await group.save();
+    }
 
     // Add student to parent
-    parent.students.push(student._id);
-    await parent.save();
+    if (!parent.students.some((id) => id.equals(student._id))) {
+      parent.students.push(student._id);
+      await parent.save();
+    }
 
     const populatedStudent = await Student.findById(student._id)
       .populate('group', 'name location')
@@ -163,16 +218,9 @@ router.put('/:id', protect, async (req, res) => {
       });
     }
 
-    const student = await Student.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      {
-        new: true,
-        runValidators: true,
-      }
-    ).populate('group', 'name location')
-      .populate('parent', 'firstName lastName email phone');
+    const { firstName, lastName, age, groupId, parentName, parentEmail } = req.body;
 
+    const student = await Student.findById(req.params.id);
     if (!student) {
       return res.status(404).json({
         success: false,
@@ -180,9 +228,122 @@ router.put('/:id', protect, async (req, res) => {
       });
     }
 
+    if (typeof firstName !== 'undefined') {
+      student.firstName = firstName;
+    }
+
+    if (typeof lastName !== 'undefined') {
+      student.lastName = lastName;
+    }
+
+    if (typeof age !== 'undefined') {
+      student.age = age;
+    }
+
+    if (groupId && groupId.toString() !== student.group.toString()) {
+      const newGroup = await Group.findById(groupId);
+      if (!newGroup) {
+        return res.status(404).json({
+          success: false,
+          message: 'Group not found',
+        });
+      }
+
+      await Group.updateOne(
+        { _id: student.group },
+        { $pull: { students: student._id } }
+      );
+
+      if (!newGroup.students.includes(student._id)) {
+        newGroup.students.push(student._id);
+        await newGroup.save();
+      }
+
+      student.group = groupId;
+    }
+
+    let currentParent = null;
+    if (student.parent) {
+      currentParent = await Parent.findById(student.parent);
+    }
+
+    if (parentEmail) {
+      const normalizedEmail = parentEmail.toLowerCase();
+      const nameParts = normalizeParentName(parentName || student.parentName);
+
+      if (!currentParent || currentParent.email !== normalizedEmail) {
+        let nextParent = await Parent.findOne({ email: normalizedEmail });
+        if (!nextParent) {
+          nextParent = await Parent.create({
+            firstName: nameParts.firstName,
+            lastName: nameParts.lastName,
+            email: normalizedEmail,
+          });
+        }
+
+        if (currentParent) {
+          currentParent.students.pull(student._id);
+          await currentParent.save();
+          if (!currentParent.students.length) {
+            await currentParent.deleteOne();
+          }
+        }
+
+        if (!nextParent.students.some((id) => id.equals(student._id))) {
+          nextParent.students.push(student._id);
+          await nextParent.save();
+        }
+
+        student.parent = nextParent._id;
+        currentParent = nextParent;
+      }
+
+      if (currentParent) {
+        let shouldSaveParent = false;
+        if (nameParts.firstName && currentParent.firstName !== nameParts.firstName) {
+          currentParent.firstName = nameParts.firstName;
+          shouldSaveParent = true;
+        }
+        if (
+          typeof nameParts.lastName !== 'undefined' &&
+          currentParent.lastName !== nameParts.lastName
+        ) {
+          currentParent.lastName = nameParts.lastName;
+          shouldSaveParent = true;
+        }
+        if (shouldSaveParent) {
+          await currentParent.save();
+        }
+      }
+
+      student.parentEmail = normalizedEmail;
+      student.parentName = nameParts.fullName;
+    } else if (parentName && currentParent) {
+      const nameParts = normalizeParentName(parentName);
+      let shouldSaveParent = false;
+      if (currentParent.firstName !== nameParts.firstName) {
+        currentParent.firstName = nameParts.firstName;
+        shouldSaveParent = true;
+      }
+      if (currentParent.lastName !== nameParts.lastName) {
+        currentParent.lastName = nameParts.lastName;
+        shouldSaveParent = true;
+      }
+      if (shouldSaveParent) {
+        await currentParent.save();
+      }
+      student.parentName = nameParts.fullName;
+    }
+
+    await student.save();
+
+    const populatedStudent = await Student.findById(student._id)
+      .populate('group', 'name location')
+      .populate('parent', 'firstName lastName email phone');
+
     res.json({
       success: true,
-      data: student,
+      data: populatedStudent,
     });
   } catch (error) {
     res.status(500).json({
@@ -220,10 +381,16 @@ router.delete('/:id', protect, async (req, res) => {
     );
 
     // Remove student from parent
-    await Parent.updateOne(
-      { _id: student.parent },
-      { $pull: { students: student._id } }
-    );
+    if (student.parent) {
+      const parent = await Parent.findById(student.parent);
+      if (parent) {
+        parent.students.pull(student._id);
+        await parent.save();
+        if (!parent.students.length) {
+          await parent.deleteOne();
+        }
+      }
+    }
 
     await student.deleteOne();
 
