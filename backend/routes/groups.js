@@ -74,11 +74,7 @@ router.get('/', protect, async (req, res) => {
 
     const groups = await Group.find(query)
       .populate('teachers', 'name email')
-      .populate({
-        path: 'students',
-        select: 'firstName lastName age',
-        options: { limit: 5 }, // Limit for performance
-      })
+      .populate('students', 'firstName lastName age')
       .sort({ name: 1 });
 
     // Get next schedule for each group

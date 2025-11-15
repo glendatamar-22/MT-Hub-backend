@@ -34,29 +34,13 @@ router.get('/users', async (req, res) => {
 });
 
 // @route   PUT /api/admin/users/:id
-// @desc    Update user (name, email, assign groups, change role)
+// @desc    Update user (name, email, password, assign groups, change roles)
 // @access  Private (Admin only)
 router.put('/users/:id', async (req, res) => {
   try {
-    const { name, email, assignedGroups, role } = req.body;
+    const { name, email, password, assignedGroups, role, roles } = req.body;
 
-    const updateData = {};
-    if (name) updateData.name = name;
-    if (email) updateData.email = email;
-    if (assignedGroups !== undefined) updateData.assignedGroups = assignedGroups;
-    if (role) updateData.role = role;
-
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      {
-        new: true,
-        runValidators: true,
-      }
-    )
-      .select('-password')
-      .populate('assignedGroups', 'name location');
-
+    const user = await User.findById(req.params.id);
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -64,9 +48,28 @@ router.put('/users/:id', async (req, res) => {
       });
     }
 
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (password) user.password = password; // Will be hashed by pre-save hook
+    if (assignedGroups !== undefined) user.assignedGroups = assignedGroups;
+    if (role) user.role = role;
+    if (roles && Array.isArray(roles)) {
+      user.roles = roles;
+      // Set primary role to first role in array
+      if (roles.length > 0) {
+        user.role = roles[0];
+      }
+    }
+
+    await user.save();
+
+    const updatedUser = await User.findById(user._id)
+      .select('-password')
+      .populate('assignedGroups', 'name location');
+
     res.json({
       success: true,
-      data: user,
+      data: updatedUser,
     });
   } catch (error) {
     res.status(500).json({
