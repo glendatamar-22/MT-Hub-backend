@@ -21,8 +21,15 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'teacher'],
+    enum: ['admin', 'teacher', 'student', 'parent'],
     default: 'teacher',
+  },
+  roles: {
+    type: [String],
+    enum: ['admin', 'teacher', 'student', 'parent'],
+    default: function() {
+      return [this.role];
+    },
   },
   assignedGroups: [
     {
